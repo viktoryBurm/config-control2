@@ -5,6 +5,8 @@ import json
 import urllib.request
 import urllib.error
 from collections import deque
+import subprocess
+import tempfile
 
 def fetch_package_info(package_name, repo_url, version):
     """
@@ -214,7 +216,7 @@ def print_dependency_tree(graph, start_package, cyclic_dependencies):
     Выводит дерево зависимостей в формате ASCII
     """
     print("\n" + "=" * 60)
-    print("ГРАФ ЗАВИСИМОСТЕЙ (DFS)")
+    print("ГРАФ ЗАВИСИМОСТЕЙ (ASCII-дерево)")
     print("=" * 60)
     
     def print_node(package, level=0, visited=None):
@@ -271,80 +273,203 @@ def analyze_graph_statistics(graph, cyclic_dependencies):
         for parent, child in cyclic_dependencies:
             print(f"  {parent} -> {child}")
 
-def demonstrate_test_repository_cases():
+def generate_mermaid_graph(graph, start_package, cyclic_dependencies):
     """
-    Демонстрирует различные случаи работы с тестовым репозиторием
+    Генерирует Mermaid-диаграмму графа зависимостей
+    """
+    mermaid_code = ["graph TD"]
+    
+    # Добавляем стартовый пакет с особым стилем
+    mermaid_code.append(f"    {start_package.replace('-', '_')}[{start_package}]:::root")
+    
+    # Добавляем все узлы и связи
+    for package, info in graph.items():
+        package_id = package.replace('-', '_')
+        
+        # Добавляем зависимости
+        for dep, dep_version in info.get('dependencies', {}).items():
+            dep_id = dep.replace('-', '_')
+            
+            # Проверяем циклическую зависимость
+            is_cyclic = (package, dep) in cyclic_dependencies
+            
+            if is_cyclic:
+                mermaid_code.append(f"    {package_id} -.-> {dep_id}")
+            else:
+                mermaid_code.append(f"    {package_id} --> {dep_id}")
+    
+    # Добавляем стили
+    mermaid_code.append("    classDef root fill:#e1f5fe,stroke:#01579b,stroke-width:2px")
+    mermaid_code.append("    classDef cyclic fill:#ffebee,stroke:#c62828,stroke-width:2px")
+    
+    # Помечаем циклические зависимости
+    for parent, child in cyclic_dependencies:
+        parent_id = parent.replace('-', '_')
+        child_id = child.replace('-', '_')
+        mermaid_code.append(f"    class {parent_id},{child_id} cyclic")
+    
+    return "\n".join(mermaid_code)
+
+def save_mermaid_svg(mermaid_code, output_file):
+    """
+    Сохраняет Mermaid-диаграмму в SVG файл
+    """
+    try:
+        # Создаем временный файл с Mermaid-кодом
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.mmd', delete=False) as temp_file:
+            temp_file.write(mermaid_code)
+            temp_path = temp_file.name
+        
+        # Конвертируем Mermaid в SVG с помощью @mermaid-js/mermaid-cli
+        cmd = ['npx', '-p', '@mermaid-js/mermaid-cli', 'mmdc', 
+               '-i', temp_path, 
+               '-o', output_file,
+               '-t', 'default']
+        
+        print(f"Генерация SVG диаграммы...")
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            print(f"Предупреждение: Не удалось сгенерировать SVG: {result.stderr}")
+            print("Установите mermaid-cli: npm install -g @mermaid-js/mermaid-cli")
+            
+            # Сохраняем Mermaid код в текстовый файл как запасной вариант
+            text_output = output_file.replace('.svg', '.mmd')
+            with open(text_output, 'w', encoding='utf-8') as f:
+                f.write(mermaid_code)
+            print(f"Mermaid код сохранен в: {text_output}")
+            return False
+        
+        print(f"SVG диаграмма сохранена в: {output_file}")
+        return True
+        
+    except Exception as e:
+        print(f"Ошибка при генерации SVG: {e}")
+        # Сохраняем Mermaid код в текстовый файл как запасной вариант
+        text_output = output_file.replace('.svg', '.mmd')
+        with open(text_output, 'w', encoding='utf-8') as f:
+            f.write(mermaid_code)
+        print(f"Mermaid код сохранен в: {text_output}")
+        return False
+    finally:
+        # Удаляем временный файл
+        if 'temp_path' in locals() and os.path.exists(temp_path):
+            os.unlink(temp_path)
+
+def demonstrate_visualization_cases():
+    """
+    Демонстрирует примеры визуализации для трех различных пакетов
     """
     print("\n" + "=" * 60)
-    print("ДЕМОНСТРАЦИЯ РАБОТЫ С ТЕСТОВЫМ РЕПОЗИТОРИЕМ")
+    print("ДЕМОНСТРАЦИЯ ВИЗУАЛИЗАЦИИ ДЛЯ РАЗЛИЧНЫХ ПАКЕТОВ")
     print("=" * 60)
     
-    # Создаем тестовые данные для демонстрации
-    test_cases = [
+    demo_packages = [
         {
-            "name": "Простая линейная цепочка",
-            "graph": {
-                "A": {"versions": {"1.0.0": {"dependencies": {"B": "^1.0.0"}}}},
-                "B": {"versions": {"1.0.0": {"dependencies": {"C": "^1.0.0"}}}},
-                "C": {"versions": {"1.0.0": {"dependencies": {}}}}
-            },
-            "start_package": "A",
-            "description": "A → B → C"
+            "name": "react",
+            "version": "18.2.0",
+            "description": "React - популярная библиотека для построения пользовательских интерфейсов"
         },
         {
-            "name": "Граф с циклическими зависимостями",
-            "graph": {
-                "X": {"versions": {"1.0.0": {"dependencies": {"Y": "^1.0.0"}}}},
-                "Y": {"versions": {"1.0.0": {"dependencies": {"Z": "^1.0.0"}}}},
-                "Z": {"versions": {"1.0.0": {"dependencies": {"X": "^1.0.0"}}}}
-            },
-            "start_package": "X",
-            "description": "X → Y → Z → X (цикл)"
+            "name": "express",
+            "version": "4.18.0", 
+            "description": "Express - минималистичный веб-фреймворк для Node.js"
         },
         {
-            "name": "Граф с несколькими зависимостями",
-            "graph": {
-                "M": {"versions": {"1.0.0": {"dependencies": {"N": "^1.0.0", "O": "^1.0.0"}}}},
-                "N": {"versions": {"1.0.0": {"dependencies": {"P": "^1.0.0"}}}},
-                "O": {"versions": {"1.0.0": {"dependencies": {"P": "^1.0.0"}}}},
-                "P": {"versions": {"1.0.0": {"dependencies": {}}}}
-            },
-            "start_package": "M",
-            "description": "M зависит от N и O, которые оба зависят от P"
+            "name": "lodash",
+            "version": "4.17.21",
+            "description": "Lodash - утилитарная библиотека JavaScript"
         }
     ]
     
-    for i, case in enumerate(test_cases, 1):
-        print(f"\n--- Тестовый случай {i}: {case['name']} ---")
-        print(f"Описание: {case['description']}")
-        
-        # Сохраняем тестовые данные во временный файл
-        test_file = f"test_case_{i}.json"
-        with open(test_file, 'w', encoding='utf-8') as f:
-            json.dump(case['graph'], f, indent=2)
+    for i, pkg in enumerate(demo_packages, 1):
+        print(f"\n--- Демонстрация {i}: {pkg['name']}@{pkg['version']} ---")
+        print(f"Описание: {pkg['description']}")
         
         try:
-            # Строим граф и вычисляем порядок загрузки
+            # Строим граф зависимостей
             graph, cyclic_deps = build_dependency_graph(
-                case['start_package'], 
-                test_file, 
-                "1.0.0", 
-                "", 
-                True
+                pkg['name'],
+                'https://registry.npmjs.org',
+                pkg['version'],
+                ""
             )
             
-            load_order = calculate_load_order(graph, case['start_package'])
+            # Генерируем и сохраняем Mermaid диаграмму
+            mermaid_code = generate_mermaid_graph(graph, pkg['name'], cyclic_deps)
+            output_file = f"{pkg['name']}_dependencies.svg"
             
-            print(f"Порядок загрузки: {' → '.join(load_order)}")
-            print(f"Циклические зависимости: {len(cyclic_deps)}")
+            if save_mermaid_svg(mermaid_code, output_file):
+                print(f"✓ SVG диаграмма сохранена: {output_file}")
+            else:
+                print(f"✗ Не удалось сгенерировать SVG для {pkg['name']}")
+            
+            # Выводим ASCII-дерево
+            print(f"\nASCII-дерево для {pkg['name']}:")
+            print_dependency_tree(graph, pkg['name'], cyclic_deps)
+            
+            # Анализируем статистику
+            analyze_graph_statistics(graph, cyclic_deps)
             
         except Exception as e:
-            print(f"Ошибка при обработке тестового случая: {e}")
+            print(f"Ошибка при обработке пакета {pkg['name']}: {e}")
+
+def compare_with_npm_tools(package_name, version):
+    """
+    Сравнивает результаты с выводом штатных инструментов npm
+    """
+    print("\n" + "=" * 60)
+    print("СРАВНЕНИЕ С ИНСТРУМЕНТАМИ NPM")
+    print("=" * 60)
+    
+    print(f"Сравнение для пакета: {package_name}@{version}")
+    
+    try:
+        # Строим граф нашим инструментом
+        our_graph, our_cyclic = build_dependency_graph(
+            package_name,
+            'https://registry.npmjs.org',
+            version,
+            ""
+        )
         
-        finally:
-            # Удаляем временный файл
-            if os.path.exists(test_file):
-                os.remove(test_file)
+        our_packages = len(our_graph)
+        our_dependencies = sum(len(pkg.get('dependencies', {})) for pkg in our_graph.values())
+        
+        print("\nНаш инструмент:")
+        print(f"  - Пакетов: {our_packages}")
+        print(f"  - Зависимостей: {our_dependencies}")
+        print(f"  - Циклических зависимостей: {len(our_cyclic)}")
+        
+        print("\npm-дерево (штатный инструмент npm):")
+        print("  - Использует плоский вывод зависимостей")
+        print("  - Показывает версионные конфликты")
+        print("  - Включает devDependencies при установке")
+        
+        print("\nРасхождения и их причины:")
+        print("1. Алгоритм обхода:")
+        print("   - Наш: DFS с ограничением по глубине")
+        print("   - NPM: Учитывает версионные политики и конфликты")
+        
+        print("2. Обработка зависимостей:")
+        print("   - Наш: Все зависимости (dependencies, devDependencies, peerDependencies)")
+        print("   - NPM: Только dependencies по умолчанию")
+        
+        print("3. Временные зависимости:")
+        print("   - Наш: Не обрабатывает временные зависимости разрешения")
+        print("   - NPM: Использует сложный алгоритм разрешения версий")
+        
+        print("4. Peer dependencies:")
+        print("   - Наш: Включает в общий граф")
+        print("   - NPM: Обрабатывает особым образом")
+        
+        print("\nРекомендации:")
+        print("- Для точного анализа используйте npm ls --all")
+        print("- Для визуализации больших графов используйте наш инструмент")
+        print("- Для разработки учитывайте различия в алгоритмах")
+        
+    except Exception as e:
+        print(f"Ошибка при сравнении: {e}")
 
 def main():
     """Основная функция программы"""
@@ -352,31 +477,31 @@ def main():
     # Создаем парсер аргументов командной строки
     parser = argparse.ArgumentParser(
         description='Инструмент визуализации графа зависимостей пакетов',
-        epilog='Пример использования: python dependency_analyzer.py --package-name React --repo-url npmjs.org --version 1.0.0'
+        epilog='Пример использования: python dependency_analyzer.py --package-name react --repo-url https://registry.npmjs.org --version 18.2.0 --output graph.svg --show-tree --generate-mermaid'
     )
     
-    # Добавляем все необходимые параметры согласно требованиям
+    # Добавляем все необходимые параметры
     
     # 1. Имя анализируемого пакета (необязательный параметр)
     parser.add_argument(
         '--package-name',
         type=str,
-        default='example-package',  # необязательный параметр
-        help='Имя анализируемого пакета (например: React, lodash)'
+        default='react',
+        help='Имя анализируемого пакета (например: react, express, lodash)'
     )
     
     # 2. URL-адрес репозитория или путь к файлу
     parser.add_argument(
         '--repo-url',
         type=str,
-        default='https://registry.npmjs.org',  # Значение по умолчанию
+        default='https://registry.npmjs.org',
         help='URL-адрес репозитория или путь к файлу тестового репозитория'
     )
     
     # 3. Режим работы с тестовым репозиторием (флаг)
     parser.add_argument(
         '--test-repo',
-        action='store_true',  # Флаг - если указан, то True
+        action='store_true',
         default=False,
         help='Режим работы с тестовым репозиторием'
     )
@@ -385,7 +510,7 @@ def main():
     parser.add_argument(
         '--version',
         type=str,
-        default='latest',  # По умолчанию последняя версия
+        default='latest',
         help='Версия пакета (например: 1.0.0, latest)'
     )
     
@@ -393,8 +518,8 @@ def main():
     parser.add_argument(
         '--output',
         type=str,
-        default='dependency_graph.png',
-        help='Имя сгенерированного файла с изображением графа'
+        default='dependency_graph.svg',
+        help='Имя сгенерированного файла с изображением графа (SVG)'
     )
     
     # 6. Режим вывода зависимостей в формате ASCII-дерева (флаг)
@@ -413,7 +538,7 @@ def main():
         help='Подстрока для фильтрации пакетов (например: "dev-", "test")'
     )
     
-    # 8. Режим вывода порядка загрузки (новый параметр для этапа 4)
+    # 8. Режим вывода порядка загрузки
     parser.add_argument(
         '--show-load-order',
         action='store_true',
@@ -421,12 +546,36 @@ def main():
         help='Вывести порядок загрузки зависимостей'
     )
     
-    # 9. Режим демонстрации тестовых случаев (новый параметр для этапа 4)
+    # 9. Режим демонстрации тестовых случаев
     parser.add_argument(
         '--demo-test-cases',
         action='store_true',
         default=False,
         help='Показать демонстрационные тестовые случаи'
+    )
+    
+    # 10. Генерация Mermaid диаграммы (новый параметр для этапа 5)
+    parser.add_argument(
+        '--generate-mermaid',
+        action='store_true',
+        default=True,
+        help='Сгенерировать Mermaid диаграмму и сохранить в SVG'
+    )
+    
+    # 11. Демонстрация визуализации (новый параметр для этапа 5)
+    parser.add_argument(
+        '--demo-visualization',
+        action='store_true',
+        default=False,
+        help='Показать демонстрацию визуализации для трех пакетов'
+    )
+    
+    # 12. Сравнение с npm (новый параметр для этапа 5)
+    parser.add_argument(
+        '--compare-with-npm',
+        action='store_true',
+        default=False,
+        help='Сравнить результаты с инструментами npm'
     )
     
     try:
@@ -439,29 +588,25 @@ def main():
         if not args.package_name.strip():
             raise ValueError("Имя пакета не может быть пустым")
         
-        # Проверяем, что URL репозитория валидный (базовая проверка)
-        if args.repo_url and not (args.repo_url.startswith('http://') or 
-                                args.repo_url.startswith('https://') or
-                                os.path.exists(args.repo_url)):
-            print(f"Предупреждение: URL репозитория '{args.repo_url}' может быть некорректным", file=sys.stderr)
-        
         # Проверяем расширение выходного файла
-        if not args.output.lower().endswith(('.png', '.jpg', '.jpeg', '.svg')):
-            print(f"Предупреждение: выходной файл '{args.output}' имеет нестандартное расширение", file=sys.stderr)
+        if not args.output.lower().endswith('.svg'):
+            print(f"Предупреждение: выходной файл '{args.output}' будет сохранен как SVG", file=sys.stderr)
+            args.output = args.output + '.svg'
         
-        # Проверяем версию пакета (базовая валидация)
-        if args.version != 'latest' and not any(c.isdigit() for c in args.version):
-            print(f"Предупреждение: версия '{args.version}' может быть некорректной", file=sys.stderr)
-        
-        # ЭТАП 4: ДОПОЛНИТЕЛЬНЫЕ ОПЕРАЦИИ НАД ГРАФОМ
+        # ЭТАП 5: ВИЗУАЛИЗАЦИЯ ГРАФА ЗАВИСИМОСТЕЙ
         
         print("=" * 50)
-        print("ЭТАП 4: ДОПОЛНИТЕЛЬНЫЕ ОПЕРАЦИИ НАД ГРАФОМ")
+        print("ЭТАП 5: ВИЗУАЛИЗАЦИЯ ГРАФА ЗАВИСИМОСТЕЙ")
         print("=" * 50)
         
-        # Демонстрация тестовых случаев если запрошено
-        if args.demo_test_cases:
-            demonstrate_test_repository_cases()
+        # Демонстрация визуализации если запрошено
+        if args.demo_visualization:
+            demonstrate_visualization_cases()
+            return
+        
+        # Сравнение с npm если запрошено
+        if args.compare_with_npm:
+            compare_with_npm_tools(args.package_name, args.version)
             return
         
         # Строим граф зависимостей
@@ -474,13 +619,31 @@ def main():
             args.test_repo
         )
         
-        # Выводим результаты этапа 3
+        # Выводим ASCII-дерево если запрошено
         if args.show_tree:
             print_dependency_tree(graph, args.package_name, cyclic_dependencies)
         
+        # Генерируем и сохраняем Mermaid диаграмму
+        if args.generate_mermaid:
+            print(f"\nГенерация Mermaid диаграммы...")
+            mermaid_code = generate_mermaid_graph(graph, args.package_name, cyclic_dependencies)
+            
+            # Сохраняем Mermaid код в файл
+            mmd_file = args.output.replace('.svg', '.mmd')
+            with open(mmd_file, 'w', encoding='utf-8') as f:
+                f.write(mermaid_code)
+            print(f"Mermaid код сохранен в: {mmd_file}")
+            
+            # Сохраняем SVG
+            if save_mermaid_svg(mermaid_code, args.output):
+                print(f"SVG диаграмма успешно сгенерирована: {args.output}")
+            else:
+                print(f"Не удалось сгенерировать SVG диаграмму")
+        
+        # Выводим статистику
         analyze_graph_statistics(graph, cyclic_dependencies)
         
-        # ЭТАП 4: Вывод порядка загрузки зависимостей
+        # Выводим порядок загрузки если запрошено
         if args.show_load_order:
             print("\n" + "=" * 60)
             print("ПОРЯДОК ЗАГРУЗКИ ЗАВИСИМОСТЕЙ")
@@ -493,26 +656,9 @@ def main():
                 package_info = graph.get(package, {})
                 version = package_info.get('version', 'unknown')
                 print(f"{i:2d}. {package}@{version}")
-            
-            print("\nСравнение с реальными менеджерами пакетов:")
-            print("- npm/yarn используют алгоритмы с учетом версий и конфликтов")
-            print("- Наш алгоритм использует чисто топологическую сортировку")
-            print("- Расхождения возможны из-за:")
-            print("  * Обработки версионных конфликтов")
-            print("  * Peer dependencies")
-            print("  * Optional dependencies")
-            print("  * Разрешения циклических зависимостей")
         
-        # Демонстрация работы с тестовым репозиторием
-        if args.test_repo:
-            print("\n" + "=" * 60)
-            print("РЕЖИМ ТЕСТИРОВАНИЯ АКТИВИРОВАН")
-            print("=" * 60)
-            print("Используется тестовый репозиторий из файла")
-            print("Пакеты представлены заглавными латинскими буквами")
-        
-        print("\nЭтап 4 завершен успешно!")
-        print("Дополнительные операции над графом выполнены")
+        print("\nЭтап 5 завершен успешно!")
+        print("Визуализация графа зависимостей выполнена")
         
     except argparse.ArgumentError as e:
         # Обработка ошибок парсинга аргументов
