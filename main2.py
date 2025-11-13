@@ -1,6 +1,88 @@
 import argparse
 import sys
 import os
+import json
+import urllib.request
+import urllib.error
+
+def fetch_package_info(package_name, repo_url, version):
+    """
+    Получает информацию о пакете из npm реестра
+    """
+    try:
+        # Формируем URL для получения информации о пакете
+        if repo_url.endswith('/'):
+            repo_url = repo_url[:-1]
+        
+        package_url = f"{repo_url}/{package_name}"
+        
+        print(f"Запрос информации о пакете: {package_url}")
+        
+        # Выполняем HTTP-запрос
+        with urllib.request.urlopen(package_url) as response:
+            data = json.loads(response.read().decode('utf-8'))
+        
+        return data
+        
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            raise ValueError(f"Пакет '{package_name}' не найден в репозитории")
+        else:
+            raise ValueError(f"Ошибка HTTP {e.code}: {e.reason}")
+    except urllib.error.URLError as e:
+        raise ValueError(f"Ошибка подключения к репозиторию: {e.reason}")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Ошибка парсинга JSON ответа: {e}")
+    except Exception as e:
+        raise ValueError(f"Ошибка при получении данных: {e}")
+
+def get_package_version_info(package_data, version):
+    """
+    Получает информацию о конкретной версии пакета
+    """
+    try:
+        if version == 'latest':
+            # Используем последнюю версию
+            if 'dist-tags' in package_data and 'latest' in package_data['dist-tags']:
+                latest_version = package_data['dist-tags']['latest']
+                version_info = package_data['versions'].get(latest_version)
+            else:
+                # Берем последнюю версию из списка
+                versions = list(package_data['versions'].keys())
+                if not versions:
+                    raise ValueError("В пакете нет доступных версий")
+                latest_version = sorted(versions)[-1]  # Сортируем и берем последнюю
+                version_info = package_data['versions'][latest_version]
+        else:
+            # Используем указанную версию
+            version_info = package_data['versions'].get(version)
+        
+        if not version_info:
+            available_versions = list(package_data['versions'].keys())[:5]  # Показываем первые 5 версий
+            raise ValueError(f"Версия '{version}' не найдена. Доступные версии: {', '.join(available_versions)}...")
+        
+        return version_info
+        
+    except Exception as e:
+        raise ValueError(f"Ошибка при получении информации о версии: {e}")
+
+def extract_dependencies(version_info):
+    """
+    Извлекает прямые зависимости из информации о версии пакета
+    """
+    dependencies = {}
+    
+    # Проверяем различные возможные места хранения зависимостей
+    if 'dependencies' in version_info:
+        dependencies.update(version_info['dependencies'])
+    
+    if 'devDependencies' in version_info:
+        dependencies.update(version_info['devDependencies'])
+    
+    if 'peerDependencies' in version_info:
+        dependencies.update(version_info['peerDependencies'])
+    
+    return dependencies
 
 def main():
     """Основная функция программы"""
@@ -93,25 +175,48 @@ def main():
         if args.version != 'latest' and not any(c.isdigit() for c in args.version):
             print(f"Предупреждение: версия '{args.version}' может быть некорректной", file=sys.stderr)
         
-        # ВЫВОД РЕЗУЛЬТАТОВ - ТРЕБОВАНИЕ ЭТАПА 1
+        # ЭТАП 2: СБОР ДАННЫХ О ЗАВИСИМОСТЯХ
         
         print("=" * 50)
-        print("НАСТРОЙКИ ПРОГРАММЫ")
+        print("ЭТАП 2: СБОР ДАННЫХ О ЗАВИСИМОСТЯХ")
         print("=" * 50)
         
-        # Выводим все параметры в формате ключ-значение
-        print(f"package-name: {args.package_name}")
-        print(f"repo-url: {args.repo_url}")
-        print(f"test-repo: {args.test_repo}")
-        print(f"version: {args.version}")
-        print(f"output: {args.output}")
-        print(f"show-tree: {args.show_tree}")
-        print(f"filter: {args.filter}")
+        # Получаем информацию о пакете
+        print(f"Получение информации о пакете '{args.package_name}' версии '{args.version}'...")
+        package_data = fetch_package_info(args.package_name, args.repo_url, args.version)
         
+        # Получаем информацию о конкретной версии
+        version_info = get_package_version_info(package_data, args.version)
+        
+        # Извлекаем прямые зависимости
+        dependencies = extract_dependencies(version_info)
+        
+        # ВЫВОД РЕЗУЛЬТАТОВ - ТРЕБОВАНИЕ ЭТАПА 2
+        print(f"\nПРЯМЫЕ ЗАВИСИМОСТИ ПАКЕТА '{args.package_name}@{version_info.get('version', 'unknown')}':")
+        print("-" * 60)
+        
+        if not dependencies:
+            print("Прямые зависимости не найдены")
+        else:
+            for dep_name, dep_version in dependencies.items():
+                # Применяем фильтр если указан
+                if args.filter and args.filter not in dep_name:
+                    continue
+                print(f"  {dep_name}: {dep_version}")
+        
+        print(f"\nВсего прямых зависимостей: {len(dependencies)}")
+        
+        # Выводим общую информацию о пакете
+        print("\n" + "=" * 50)
+        print("ОБЩАЯ ИНФОРМАЦИЯ О ПАКЕТЕ:")
         print("=" * 50)
-        print("Конфигурация успешно загружена!")
-        print("На данном этапе программа только показывает настройки")
-        print("Анализ зависимостей будет реализован в следующих этапах")
+        print(f"Имя пакета: {args.package_name}")
+        print(f"Версия: {version_info.get('version', 'unknown')}")
+        print(f"Описание: {version_info.get('description', 'не указано')}")
+        print(f"Репоизиторий: {args.repo_url}")
+        
+        print("\nЭтап 2 завершен успешно!")
+        print("Данные о зависимостях получены и готовы для дальнейшего анализа")
         
     except argparse.ArgumentError as e:
         # Обработка ошибок парсинга аргументов
