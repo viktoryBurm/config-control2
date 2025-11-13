@@ -163,6 +163,52 @@ def build_dependency_graph(start_package, repo_url, version, filter_str, test_re
     
     return graph, cyclic_dependencies
 
+def calculate_load_order(graph, start_package):
+    """
+    Вычисляет порядок загрузки зависимостей с помощью топологической сортировки
+    """
+    # Строим обратный граф для вычисления зависимостей
+    reverse_graph = {}
+    in_degree = {}
+    
+    # Инициализируем граф и степени входа
+    for package in graph:
+        reverse_graph[package] = []
+        in_degree[package] = 0
+    
+    # Строим обратные связи
+    for package, info in graph.items():
+        for dep in info.get('dependencies', {}):
+            if dep in reverse_graph:
+                reverse_graph[dep].append(package)
+                in_degree[package] += 1
+            else:
+                # Если зависимость не в графе, добавляем ее с нулевой степенью
+                reverse_graph[dep] = []
+                in_degree[dep] = 0
+    
+    # Алгоритм Кана для топологической сортировки
+    load_order = []
+    queue = deque([pkg for pkg in in_degree if in_degree[pkg] == 0])
+    
+    while queue:
+        current = queue.popleft()
+        load_order.append(current)
+        
+        for dependent in reverse_graph[current]:
+            in_degree[dependent] -= 1
+            if in_degree[dependent] == 0:
+                queue.append(dependent)
+    
+    # Проверяем наличие циклов
+    if len(load_order) != len(graph):
+        print("Предупреждение: В графе обнаружены циклы, полная топологическая сортировка невозможна")
+        # Добавляем оставшиеся пакеты в конец
+        remaining = [pkg for pkg in graph if pkg not in load_order]
+        load_order.extend(remaining)
+    
+    return load_order
+
 def print_dependency_tree(graph, start_package, cyclic_dependencies):
     """
     Выводит дерево зависимостей в формате ASCII
@@ -224,6 +270,81 @@ def analyze_graph_statistics(graph, cyclic_dependencies):
         print("\nЦиклические зависимости:")
         for parent, child in cyclic_dependencies:
             print(f"  {parent} -> {child}")
+
+def demonstrate_test_repository_cases():
+    """
+    Демонстрирует различные случаи работы с тестовым репозиторием
+    """
+    print("\n" + "=" * 60)
+    print("ДЕМОНСТРАЦИЯ РАБОТЫ С ТЕСТОВЫМ РЕПОЗИТОРИЕМ")
+    print("=" * 60)
+    
+    # Создаем тестовые данные для демонстрации
+    test_cases = [
+        {
+            "name": "Простая линейная цепочка",
+            "graph": {
+                "A": {"versions": {"1.0.0": {"dependencies": {"B": "^1.0.0"}}}},
+                "B": {"versions": {"1.0.0": {"dependencies": {"C": "^1.0.0"}}}},
+                "C": {"versions": {"1.0.0": {"dependencies": {}}}}
+            },
+            "start_package": "A",
+            "description": "A → B → C"
+        },
+        {
+            "name": "Граф с циклическими зависимостями",
+            "graph": {
+                "X": {"versions": {"1.0.0": {"dependencies": {"Y": "^1.0.0"}}}},
+                "Y": {"versions": {"1.0.0": {"dependencies": {"Z": "^1.0.0"}}}},
+                "Z": {"versions": {"1.0.0": {"dependencies": {"X": "^1.0.0"}}}}
+            },
+            "start_package": "X",
+            "description": "X → Y → Z → X (цикл)"
+        },
+        {
+            "name": "Граф с несколькими зависимостями",
+            "graph": {
+                "M": {"versions": {"1.0.0": {"dependencies": {"N": "^1.0.0", "O": "^1.0.0"}}}},
+                "N": {"versions": {"1.0.0": {"dependencies": {"P": "^1.0.0"}}}},
+                "O": {"versions": {"1.0.0": {"dependencies": {"P": "^1.0.0"}}}},
+                "P": {"versions": {"1.0.0": {"dependencies": {}}}}
+            },
+            "start_package": "M",
+            "description": "M зависит от N и O, которые оба зависят от P"
+        }
+    ]
+    
+    for i, case in enumerate(test_cases, 1):
+        print(f"\n--- Тестовый случай {i}: {case['name']} ---")
+        print(f"Описание: {case['description']}")
+        
+        # Сохраняем тестовые данные во временный файл
+        test_file = f"test_case_{i}.json"
+        with open(test_file, 'w', encoding='utf-8') as f:
+            json.dump(case['graph'], f, indent=2)
+        
+        try:
+            # Строим граф и вычисляем порядок загрузки
+            graph, cyclic_deps = build_dependency_graph(
+                case['start_package'], 
+                test_file, 
+                "1.0.0", 
+                "", 
+                True
+            )
+            
+            load_order = calculate_load_order(graph, case['start_package'])
+            
+            print(f"Порядок загрузки: {' → '.join(load_order)}")
+            print(f"Циклические зависимости: {len(cyclic_deps)}")
+            
+        except Exception as e:
+            print(f"Ошибка при обработке тестового случая: {e}")
+        
+        finally:
+            # Удаляем временный файл
+            if os.path.exists(test_file):
+                os.remove(test_file)
 
 def main():
     """Основная функция программы"""
@@ -292,6 +413,22 @@ def main():
         help='Подстрока для фильтрации пакетов (например: "dev-", "test")'
     )
     
+    # 8. Режим вывода порядка загрузки (новый параметр для этапа 4)
+    parser.add_argument(
+        '--show-load-order',
+        action='store_true',
+        default=False,
+        help='Вывести порядок загрузки зависимостей'
+    )
+    
+    # 9. Режим демонстрации тестовых случаев (новый параметр для этапа 4)
+    parser.add_argument(
+        '--demo-test-cases',
+        action='store_true',
+        default=False,
+        help='Показать демонстрационные тестовые случаи'
+    )
+    
     try:
         # Парсим аргументы командной строки
         args = parser.parse_args()
@@ -316,11 +453,16 @@ def main():
         if args.version != 'latest' and not any(c.isdigit() for c in args.version):
             print(f"Предупреждение: версия '{args.version}' может быть некорректной", file=sys.stderr)
         
-        # ЭТАП 3: ПОСТРОЕНИЕ ГРАФА ЗАВИСИМОСТЕЙ
+        # ЭТАП 4: ДОПОЛНИТЕЛЬНЫЕ ОПЕРАЦИИ НАД ГРАФОМ
         
         print("=" * 50)
-        print("ЭТАП 3: ПОСТРОЕНИЕ ГРАФА ЗАВИСИМОСТЕЙ")
+        print("ЭТАП 4: ДОПОЛНИТЕЛЬНЫЕ ОПЕРАЦИИ НАД ГРАФОМ")
         print("=" * 50)
+        
+        # Демонстрация тестовых случаев если запрошено
+        if args.demo_test_cases:
+            demonstrate_test_repository_cases()
+            return
         
         # Строим граф зависимостей
         print(f"Построение графа зависимостей для '{args.package_name}'...")
@@ -332,9 +474,34 @@ def main():
             args.test_repo
         )
         
-        # Выводим результаты
-        print_dependency_tree(graph, args.package_name, cyclic_dependencies)
+        # Выводим результаты этапа 3
+        if args.show_tree:
+            print_dependency_tree(graph, args.package_name, cyclic_dependencies)
+        
         analyze_graph_statistics(graph, cyclic_dependencies)
+        
+        # ЭТАП 4: Вывод порядка загрузки зависимостей
+        if args.show_load_order:
+            print("\n" + "=" * 60)
+            print("ПОРЯДОК ЗАГРУЗКИ ЗАВИСИМОСТЕЙ")
+            print("=" * 60)
+            
+            load_order = calculate_load_order(graph, args.package_name)
+            
+            print("Рекомендуемый порядок загрузки:")
+            for i, package in enumerate(load_order, 1):
+                package_info = graph.get(package, {})
+                version = package_info.get('version', 'unknown')
+                print(f"{i:2d}. {package}@{version}")
+            
+            print("\nСравнение с реальными менеджерами пакетов:")
+            print("- npm/yarn используют алгоритмы с учетом версий и конфликтов")
+            print("- Наш алгоритм использует чисто топологическую сортировку")
+            print("- Расхождения возможны из-за:")
+            print("  * Обработки версионных конфликтов")
+            print("  * Peer dependencies")
+            print("  * Optional dependencies")
+            print("  * Разрешения циклических зависимостей")
         
         # Демонстрация работы с тестовым репозиторием
         if args.test_repo:
@@ -344,8 +511,8 @@ def main():
             print("Используется тестовый репозиторий из файла")
             print("Пакеты представлены заглавными латинскими буквами")
         
-        print("\nЭтап 3 завершен успешно!")
-        print("Граф зависимостей построен с учетом транзитивности")
+        print("\nЭтап 4 завершен успешно!")
+        print("Дополнительные операции над графом выполнены")
         
     except argparse.ArgumentError as e:
         # Обработка ошибок парсинга аргументов
