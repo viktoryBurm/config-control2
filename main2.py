@@ -4,6 +4,7 @@ import os
 import json
 import urllib.request
 import urllib.error
+from collections import deque
 
 def fetch_package_info(package_name, repo_url, version):
     """
@@ -83,6 +84,146 @@ def extract_dependencies(version_info):
         dependencies.update(version_info['peerDependencies'])
     
     return dependencies
+
+def load_test_repository(file_path):
+    """
+    Загружает тестовый репозиторий из файла
+    """
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        return data
+    except FileNotFoundError:
+        raise ValueError(f"Файл тестового репозитория не найден: {file_path}")
+    except json.JSONDecodeError:
+        raise ValueError(f"Ошибка парсинга JSON в файле: {file_path}")
+    except Exception as e:
+        raise ValueError(f"Ошибка загрузки тестового репозитория: {e}")
+
+def build_dependency_graph(start_package, repo_url, version, filter_str, test_repo=False):
+    """
+    Строит граф зависимостей с помощью DFS без рекурсии
+    """
+    graph = {}
+    visited = set()
+    stack = deque([(start_package, version)])
+    cyclic_dependencies = set()
+    
+    while stack:
+        current_package, current_version = stack.pop()
+        
+        # Пропускаем если уже посещали
+        if current_package in visited:
+            continue
+            
+        visited.add(current_package)
+        
+        # Пропускаем пакеты по фильтру
+        if filter_str and filter_str in current_package:
+            continue
+        
+        try:
+            if test_repo:
+                # Режим тестирования - загружаем из файла
+                test_data = load_test_repository(repo_url)
+                package_data = test_data.get(current_package, {})
+                version_info = package_data.get('versions', {}).get(current_version, {})
+            else:
+                # Режим реального репозитория
+                package_data = fetch_package_info(current_package, repo_url, current_version)
+                version_info = get_package_version_info(package_data, current_version)
+            
+            # Извлекаем зависимости
+            dependencies = extract_dependencies(version_info)
+            graph[current_package] = {
+                'version': current_version,
+                'dependencies': dependencies
+            }
+            
+            # Добавляем зависимости в стек для дальнейшего обхода
+            for dep_name, dep_version in dependencies.items():
+                # Пропускаем по фильтру
+                if filter_str and filter_str in dep_name:
+                    continue
+                
+                # Проверяем циклические зависимости
+                if dep_name in visited:
+                    cyclic_dependencies.add((current_package, dep_name))
+                    continue
+                
+                stack.append((dep_name, dep_version))
+                
+        except Exception as e:
+            print(f"Предупреждение: не удалось получить зависимости для {current_package}: {e}")
+            graph[current_package] = {
+                'version': current_version,
+                'dependencies': {},
+                'error': str(e)
+            }
+    
+    return graph, cyclic_dependencies
+
+def print_dependency_tree(graph, start_package, cyclic_dependencies):
+    """
+    Выводит дерево зависимостей в формате ASCII
+    """
+    print("\n" + "=" * 60)
+    print("ГРАФ ЗАВИСИМОСТЕЙ (DFS)")
+    print("=" * 60)
+    
+    def print_node(package, level=0, visited=None):
+        if visited is None:
+            visited = set()
+            
+        if package in visited:
+            print("  " * level + f"└── {package} [ЦИКЛ]")
+            return
+            
+        visited.add(package)
+        
+        prefix = "  " * level + "└── "
+        package_info = graph.get(package, {})
+        version = package_info.get('version', 'unknown')
+        print(f"{prefix}{package}@{version}")
+        
+        if package in graph:
+            dependencies = graph[package].get('dependencies', {})
+            for i, (dep, dep_version) in enumerate(dependencies.items()):
+                is_last = i == len(dependencies) - 1
+                dep_prefix = "  " * (level + 1) + ("└── " if is_last else "├── ")
+                
+                # Проверяем циклическую зависимость
+                is_cyclic = (package, dep) in cyclic_dependencies
+                cyclic_marker = " [ЦИКЛ]" if is_cyclic else ""
+                
+                print(f"{dep_prefix}{dep}@{dep_version}{cyclic_marker}")
+                
+                if dep in graph and not is_cyclic:
+                    print_node(dep, level + 2, visited.copy())
+    
+    print_node(start_package)
+
+def analyze_graph_statistics(graph, cyclic_dependencies):
+    """
+    Анализирует статистику графа зависимостей
+    """
+    print("\n" + "=" * 60)
+    print("СТАТИСТИКА ГРАФА")
+    print("=" * 60)
+    
+    total_packages = len(graph)
+    total_dependencies = sum(len(pkg.get('dependencies', {})) for pkg in graph.values())
+    packages_with_errors = sum(1 for pkg in graph.values() if 'error' in pkg)
+    
+    print(f"Всего пакетов в графе: {total_packages}")
+    print(f"Всего зависимостей: {total_dependencies}")
+    print(f"Циклических зависимостей: {len(cyclic_dependencies)}")
+    print(f"Пакетов с ошибками: {packages_with_errors}")
+    
+    if cyclic_dependencies:
+        print("\nЦиклические зависимости:")
+        for parent, child in cyclic_dependencies:
+            print(f"  {parent} -> {child}")
 
 def main():
     """Основная функция программы"""
@@ -175,48 +316,36 @@ def main():
         if args.version != 'latest' and not any(c.isdigit() for c in args.version):
             print(f"Предупреждение: версия '{args.version}' может быть некорректной", file=sys.stderr)
         
-        # ЭТАП 2: СБОР ДАННЫХ О ЗАВИСИМОСТЯХ
+        # ЭТАП 3: ПОСТРОЕНИЕ ГРАФА ЗАВИСИМОСТЕЙ
         
         print("=" * 50)
-        print("ЭТАП 2: СБОР ДАННЫХ О ЗАВИСИМОСТЯХ")
+        print("ЭТАП 3: ПОСТРОЕНИЕ ГРАФА ЗАВИСИМОСТЕЙ")
         print("=" * 50)
         
-        # Получаем информацию о пакете
-        print(f"Получение информации о пакете '{args.package_name}' версии '{args.version}'...")
-        package_data = fetch_package_info(args.package_name, args.repo_url, args.version)
+        # Строим граф зависимостей
+        print(f"Построение графа зависимостей для '{args.package_name}'...")
+        graph, cyclic_dependencies = build_dependency_graph(
+            args.package_name, 
+            args.repo_url, 
+            args.version, 
+            args.filter,
+            args.test_repo
+        )
         
-        # Получаем информацию о конкретной версии
-        version_info = get_package_version_info(package_data, args.version)
+        # Выводим результаты
+        print_dependency_tree(graph, args.package_name, cyclic_dependencies)
+        analyze_graph_statistics(graph, cyclic_dependencies)
         
-        # Извлекаем прямые зависимости
-        dependencies = extract_dependencies(version_info)
+        # Демонстрация работы с тестовым репозиторием
+        if args.test_repo:
+            print("\n" + "=" * 60)
+            print("РЕЖИМ ТЕСТИРОВАНИЯ АКТИВИРОВАН")
+            print("=" * 60)
+            print("Используется тестовый репозиторий из файла")
+            print("Пакеты представлены заглавными латинскими буквами")
         
-        # ВЫВОД РЕЗУЛЬТАТОВ - ТРЕБОВАНИЕ ЭТАПА 2
-        print(f"\nПРЯМЫЕ ЗАВИСИМОСТИ ПАКЕТА '{args.package_name}@{version_info.get('version', 'unknown')}':")
-        print("-" * 60)
-        
-        if not dependencies:
-            print("Прямые зависимости не найдены")
-        else:
-            for dep_name, dep_version in dependencies.items():
-                # Применяем фильтр если указан
-                if args.filter and args.filter not in dep_name:
-                    continue
-                print(f"  {dep_name}: {dep_version}")
-        
-        print(f"\nВсего прямых зависимостей: {len(dependencies)}")
-        
-        # Выводим общую информацию о пакете
-        print("\n" + "=" * 50)
-        print("ОБЩАЯ ИНФОРМАЦИЯ О ПАКЕТЕ:")
-        print("=" * 50)
-        print(f"Имя пакета: {args.package_name}")
-        print(f"Версия: {version_info.get('version', 'unknown')}")
-        print(f"Описание: {version_info.get('description', 'не указано')}")
-        print(f"Репоизиторий: {args.repo_url}")
-        
-        print("\nЭтап 2 завершен успешно!")
-        print("Данные о зависимостях получены и готовы для дальнейшего анализа")
+        print("\nЭтап 3 завершен успешно!")
+        print("Граф зависимостей построен с учетом транзитивности")
         
     except argparse.ArgumentError as e:
         # Обработка ошибок парсинга аргументов
